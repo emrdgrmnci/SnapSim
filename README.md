@@ -2,7 +2,7 @@
 
 > A lightweight macOS menu bar app to quickly hide and restore iOS Simulator windows with a keyboard shortcut.
 
-![SnapSim Demo](docs/snapsim-rec.mov)
+https://github.com/user-attachments/assets/68e89aa8-7ec1-4624-81c9-52f13676248c
 
 ## ✨ Features
 
