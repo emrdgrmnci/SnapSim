@@ -13,7 +13,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for multiple simulators simultaneously
 - Animated hide/show transitions
 - Configurable button appearance
-- Auto-start on login option
+
+## [1.1.0] - 2025-12-12
+
+### Added
+- **Auto-open when Simulator launches** - SnapSim can automatically activate when Xcode Simulator app opens
+- **Launch at Login** - Option to automatically start SnapSim when you log in to your Mac
+- Menu items to toggle both new features with visual checkmarks
+- User preferences persistence for both features
+
+### Fixed
+- Fixed crash when using Launch at Login with empty login items list
+- Improved LSSharedFileList API usage for better compatibility
+- Fixed type conversion issues with deprecated CoreServices APIs
+
+### Changed
+- Enhanced menu with new options for auto-open and launch at login
+- Improved error handling for login items management
 
 ## [1.0.0] - 2025-11-29
 
