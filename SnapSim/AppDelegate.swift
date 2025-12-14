@@ -7,6 +7,11 @@
 
 import Cocoa
 import Carbon
+import ServiceManagement
+import CoreServices
+
+// Typealias to help with LSSharedFileList API bridging
+typealias LSSharedFileListItemRef = Unmanaged<LSSharedFileListItem>
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
@@ -15,6 +20,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var hiddenSimulators: [Int32: CGRect] = [:] // Store original frames by PID
     var restoreButton: RestoreButtonWindow?  // Floating pill button
     var lastSimulatorWidth: CGFloat = 250  // Track simulator width for pill button
+    var simulatorLaunchObserver: NSObjectProtocol?  // Observer for Simulator app launches
+    var openOnSimulatorLaunchMenuItem: NSMenuItem?  // Menu item for "Open SnapSim when Simulator opens"
+    var launchAtLoginMenuItem: NSMenuItem?  // Menu item for "Launch at Login"
+    
+    // UserDefaults keys
+    private let openOnSimulatorLaunchKey = "openOnSimulatorLaunch"
+    private let launchAtLoginKey = "launchAtLogin"
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSLog("=== SnapSim Starting ===")
@@ -33,6 +45,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Create the restore button (hidden initially)
         createRestoreButton()
+        
+        // Setup Simulator launch monitoring
+        setupSimulatorLaunchMonitoring()
+        
+        // Setup Launch at Login
+        setupLaunchAtLogin()
         
         NSLog("=== SnapSim launched successfully! ===")
     }
@@ -111,6 +129,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Hide/Show Simulator (⌘])",
                                action: #selector(toggleSimulator),
                                keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
+        
+        // Open SnapSim when Simulator opens
+        openOnSimulatorLaunchMenuItem = NSMenuItem(title: "Open SnapSim when Simulator opens",
+                                                   action: #selector(toggleOpenOnSimulatorLaunch),
+                                                   keyEquivalent: "")
+        openOnSimulatorLaunchMenuItem?.target = self
+        openOnSimulatorLaunchMenuItem?.state = isOpenOnSimulatorLaunchEnabled() ? .on : .off
+        menu.addItem(openOnSimulatorLaunchMenuItem!)
+        
+        // Launch at Login
+        launchAtLoginMenuItem = NSMenuItem(title: "Launch at Login",
+                                           action: #selector(toggleLaunchAtLogin),
+                                           keyEquivalent: "")
+        launchAtLoginMenuItem?.target = self
+        launchAtLoginMenuItem?.state = isLaunchAtLoginEnabled() ? .on : .off
+        menu.addItem(launchAtLoginMenuItem!)
+        
         menu.addItem(NSMenuItem.separator())
         
         let permissionItem = NSMenuItem(title: "Check Permissions",
@@ -547,6 +583,248 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
+    // MARK: - Simulator Launch Monitoring
+    
+    func setupSimulatorLaunchMonitoring() {
+        // Check if feature is enabled
+        guard isOpenOnSimulatorLaunchEnabled() else {
+            print("Open on Simulator launch is disabled")
+            return
+        }
+        
+        // Observe NSWorkspace notifications for app launches
+        let notificationCenter = NSWorkspace.shared.notificationCenter
+        simulatorLaunchObserver = notificationCenter.addObserver(
+            forName: NSWorkspace.didLaunchApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            self?.handleApplicationLaunch(notification)
+        }
+        
+        print("✓ Simulator launch monitoring enabled")
+    }
+    
+    func handleApplicationLaunch(_ notification: Notification) {
+        guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else {
+            return
+        }
+        
+        // Check if the launched app is Simulator
+        let appName = app.localizedName ?? ""
+        let bundleIdentifier = app.bundleIdentifier ?? ""
+        
+        // Simulator can be identified by name or bundle ID
+        let isSimulator = appName == "Simulator" ||
+                         appName.contains("Simulator") ||
+                         bundleIdentifier.contains("com.apple.iphonesimulator") ||
+                         bundleIdentifier == "com.apple.iphonesimulator"
+        
+        if isSimulator {
+            print("📱 Simulator app launched - activating SnapSim")
+            // Activate SnapSim app
+            NSApp.activate(ignoringOtherApps: true)
+            showNotification(title: "Simulator Detected", message: "SnapSim is ready")
+        }
+    }
+    
+    @objc func toggleOpenOnSimulatorLaunch() {
+        let currentState = isOpenOnSimulatorLaunchEnabled()
+        let newState = !currentState
+        
+        UserDefaults.standard.set(newState, forKey: openOnSimulatorLaunchKey)
+        openOnSimulatorLaunchMenuItem?.state = newState ? .on : .off
+        
+        if newState {
+            setupSimulatorLaunchMonitoring()
+            showNotification(title: "Feature Enabled", message: "SnapSim will open when Simulator launches")
+        } else {
+            // Remove observer
+            if let observer = simulatorLaunchObserver {
+                NSWorkspace.shared.notificationCenter.removeObserver(observer)
+                simulatorLaunchObserver = nil
+            }
+            showNotification(title: "Feature Disabled", message: "SnapSim will not auto-open")
+        }
+    }
+    
+    func isOpenOnSimulatorLaunchEnabled() -> Bool {
+        return UserDefaults.standard.bool(forKey: openOnSimulatorLaunchKey)
+    }
+    
+    // MARK: - Launch at Login
+    
+    func setupLaunchAtLogin() {
+        // Update menu item state based on current setting
+        let isEnabled = isLaunchAtLoginEnabled()
+        launchAtLoginMenuItem?.state = isEnabled ? .on : .off
+        
+        // Apply the setting (silently, don't show errors on startup)
+        _ = setLaunchAtLogin(isEnabled)
+    }
+    
+    @objc func toggleLaunchAtLogin() {
+        let currentState = isLaunchAtLoginEnabled()
+        let newState = !currentState
+        
+        UserDefaults.standard.set(newState, forKey: launchAtLoginKey)
+        launchAtLoginMenuItem?.state = newState ? .on : .off
+        
+        let success = setLaunchAtLogin(newState)
+        
+        if success {
+            showNotification(
+                title: newState ? "Launch at Login Enabled" : "Launch at Login Disabled",
+                message: newState ? "SnapSim will start automatically" : "SnapSim will not start automatically"
+            )
+        } else {
+            showNotification(
+                title: "Error",
+                message: "Failed to update Launch at Login setting"
+            )
+        }
+    }
+    
+    func isLaunchAtLoginEnabled() -> Bool {
+        // Check UserDefaults first
+        if UserDefaults.standard.object(forKey: launchAtLoginKey) != nil {
+            return UserDefaults.standard.bool(forKey: launchAtLoginKey)
+        }
+        
+        // If not set in UserDefaults, check actual login items
+        guard let appURL = Bundle.main.bundleURL as NSURL? else {
+            return false
+        }
+        
+        guard let loginItems = LSSharedFileListCreate(nil, kLSSharedFileListSessionLoginItems.takeUnretainedValue(), nil)?.takeRetainedValue() else {
+            return false
+        }
+        
+        var seedValue: UInt32 = 0
+        guard let itemsSnapshot = LSSharedFileListCopySnapshot(loginItems, &seedValue)?.takeRetainedValue() else {
+            return false
+        }
+        
+        let items = itemsSnapshot as! [LSSharedFileListItem]
+        for itemRef in items {
+            var error: Unmanaged<CFError>?
+            if let itemURL = LSSharedFileListItemCopyResolvedURL(itemRef, 0, &error)?.takeRetainedValue() as NSURL?,
+               itemURL.isEqual(appURL) {
+                // Found in login items, update UserDefaults
+                UserDefaults.standard.set(true, forKey: launchAtLoginKey)
+                return true
+            }
+        }
+        
+        // Not found in login items, update UserDefaults
+        UserDefaults.standard.set(false, forKey: launchAtLoginKey)
+        return false
+    }
+    
+    func setLaunchAtLogin(_ enabled: Bool) -> Bool {
+        // Get the app's bundle URL
+        guard let appURL = Bundle.main.bundleURL as NSURL? else {
+            print("✗ Could not get app bundle URL")
+            return false
+        }
+        
+        // Use LSSharedFileList API (works with main app, no helper needed)
+        // Note: This API is deprecated but still functional and is the simplest approach
+        guard let loginItems = LSSharedFileListCreate(nil, kLSSharedFileListSessionLoginItems.takeUnretainedValue(), nil)?.takeRetainedValue() else {
+            print("✗ Failed to access login items list")
+            return false
+        }
+        
+        if enabled {
+            // Check if already in login items to avoid duplicates
+            var seedValue: UInt32 = 0
+            if let itemsSnapshot = LSSharedFileListCopySnapshot(loginItems, &seedValue)?.takeRetainedValue() {
+                let items = itemsSnapshot as! [LSSharedFileListItem]
+                for itemRef in items {
+                    var error: Unmanaged<CFError>?
+                    if let itemURL = LSSharedFileListItemCopyResolvedURL(itemRef, 0, &error)?.takeRetainedValue() as NSURL?,
+                       itemURL.isEqual(appURL) {
+                        // Already in login items
+                        print("✓ Already in login items")
+                        return true
+                    }
+                }
+            }
+            
+            // Add to login items
+            // Get the last item from the list to insert after
+            var seedValue2: UInt32 = 0
+            var afterItem: LSSharedFileListItem? = nil
+            
+            if let itemsSnapshot = LSSharedFileListCopySnapshot(loginItems, &seedValue2)?.takeRetainedValue() {
+                let items = itemsSnapshot as! [LSSharedFileListItem]
+                afterItem = items.last
+            }
+            
+            // Insert the item
+            // Handle both cases: list with items and empty list
+            // For empty list, we'll use a workaround to avoid kLSSharedFileListItemLast crash
+            let result: LSSharedFileListItem?
+            
+            if let lastItem = afterItem {
+                // Normal case: insert after the last item
+                result = LSSharedFileListInsertItemURL(loginItems,
+                                                      lastItem,
+                                                      nil,
+                                                      nil,
+                                                      appURL,
+                                                      nil,
+                                                      nil)
+            } else {
+                // Empty list case: kLSSharedFileListItemLast causes EXC_BAD_ACCESS when unwrapped
+                // Workaround: LSSharedFileListItem is actually OpaquePointer under the hood
+                // We can extract the pointer from the Unmanaged constant and cast it
+                let constantUnmanaged = kLSSharedFileListItemLast
+                // Get the underlying pointer - this is safe because it's just extracting the pointer
+                let constantPointer = constantUnmanaged.toOpaque()
+                // LSSharedFileListItem is a typealias for OpaquePointer, so we can cast directly
+                // Use unsafeBitCast to convert the pointer to LSSharedFileListItem type
+                let constantItem = unsafeBitCast(constantPointer, to: LSSharedFileListItem.self)
+                result = LSSharedFileListInsertItemURL(loginItems,
+                                                      constantItem,
+                                                      nil,
+                                                      nil,
+                                                      appURL,
+                                                      nil,
+                                                      nil)
+            }
+            if result != nil {
+                print("✓ Launch at Login enabled")
+                return true
+            } else {
+                print("✗ Failed to add to login items")
+                return false
+            }
+        } else {
+            // Remove from login items
+            var seedValue: UInt32 = 0
+            guard let itemsSnapshot = LSSharedFileListCopySnapshot(loginItems, &seedValue)?.takeRetainedValue() else {
+                print("✗ Failed to get login items snapshot")
+                return false
+            }
+            
+            let items = itemsSnapshot as! [LSSharedFileListItem]
+            for itemRef in items {
+                var error: Unmanaged<CFError>?
+                if let itemURL = LSSharedFileListItemCopyResolvedURL(itemRef, 0, &error)?.takeRetainedValue() as NSURL?,
+                   itemURL.isEqual(appURL) {
+                    let removeResult = LSSharedFileListItemRemove(loginItems, itemRef)
+                    if removeResult == noErr {
+                        print("✓ Launch at Login disabled")
+                        return true
+                    }
+                }
+            }
+            print("⚠ Launch at Login item not found in list")
+            return false
+        }
+    }
+    
     func applicationWillTerminate(_ notification: Notification) {
         // Clean up event monitors
         if let monitor = globalMonitor {
@@ -555,6 +833,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let monitor = localMonitor {
             NSEvent.removeMonitor(monitor)
         }
+        
+        // Remove Simulator launch observer
+        if let observer = simulatorLaunchObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+        
         // Close restore button window
         restoreButton?.close()
     }
